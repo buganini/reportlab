@@ -58,10 +58,26 @@ _wsc = ''.join((
     ))
 _wsc_re_split=re.compile('[%s]+'% re.escape(_wsc)).split
 
+def word_split(s):
+    import icu
+    b=icu.BreakIterator.createWordInstance(icu.Locale.getEnglish())
+    b.setText(s)
+    l=0
+    r=[]
+    for p in b:
+        if s[p-1]==u"<" or s[p:p+1]==u">": # html gaurd
+            continue
+        r.append(s[l:p])
+        l=p
+    if l<len(s):
+        r.append(s[l:])
+    return r
+
+
 def split(text, delim=None):
     if isBytes(text): text = text.decode('utf8')
     if delim is not None and isBytes(delim): delim = delim.decode('utf8')
-    return [uword for uword in (_wsc_re_split(text) if delim is None and u'\xa0' in text else text.split(delim))]
+    return [uword.strip() for uword in (word_split(text) if delim is None else text.split(delim))]
 
 def strip(text):
     if isBytes(text): text = text.decode('utf8')
