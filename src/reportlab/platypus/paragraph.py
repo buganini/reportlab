@@ -15,11 +15,11 @@ from reportlab.lib.geomutils import normalizeTRBL
 from reportlab.lib.textsplit import wordSplit, ALL_CANNOT_START
 from copy import deepcopy
 from reportlab.lib.abag import ABag
-from reportlab.rl_config import platypus_link_underline
-from reportlab import rl_config
+from reportlab.rl_config import platypus_link_underline, decimalSymbol, _FUZZ, paraFontSizeHeightOffset
 from reportlab.lib.utils import _className, isBytes, unicodeT, bytesT, strTypes
 from reportlab.lib.rl_accel import sameFrag
 import re
+from types import MethodType
 
 #on UTF8/py33 branch, split and strip must be unicode-safe!
 #thanks to Dirk Holtwick for helpful discussions/insight
@@ -57,6 +57,7 @@ _wsc = ''.join((
     u'\u3000',  # IDEOGRAPHIC SPACE
     ))
 _wsc_re_split=re.compile('[%s]+'% re.escape(_wsc)).split
+_wsc_end_search=re.compile('[%s]+$'% re.escape(_wsc)).search
 
 def word_split(s):
     import icu
@@ -241,7 +242,7 @@ def _putFragLine(cur_x, tx, line, last, pKind):
     ws = getattr(tx,'_wordSpace',0)
     nSpaces = 0
     words = line.words
-    for f in words:
+    for i, f in enumerate(words):
         if hasattr(f,'cbDefn'):
             cbDefn = f.cbDefn
             kind = cbDefn.kind
@@ -277,6 +278,9 @@ def _putFragLine(cur_x, tx, line, last, pKind):
                 tx._textOut('',1)
         else:
             cur_x_s = cur_x + nSpaces*ws
+            end_x = cur_x_s
+            if i > 0:
+                end_x = cur_x_s - _trailingSpaceLength(words[i-1].text, tx)
             if (tx._fontname,tx._fontsize)!=(f.fontName,f.fontSize):
                 tx._setFont(f.fontName, f.fontSize)
             if xs.textColor!=f.textColor:
@@ -294,10 +298,10 @@ def _putFragLine(cur_x, tx, line, last, pKind):
             elif xs.underline:
                 if not f.underline:
                     xs.underline = 0
-                    xs.underlines.append( (xs.underline_x, cur_x_s, xs.underlineColor) )
+                    xs.underlines.append( (xs.underline_x, end_x, xs.underlineColor) )
                     xs.underlineColor = None
                 elif xs.textColor!=xs.underlineColor:
-                    xs.underlines.append( (xs.underline_x, cur_x_s, xs.underlineColor) )
+                    xs.underlines.append( (xs.underline_x, end_x, xs.underlineColor) )
                     xs.underlineColor = xs.textColor
                     xs.underline_x = cur_x_s
             if not xs.strike and f.strike:
@@ -307,10 +311,10 @@ def _putFragLine(cur_x, tx, line, last, pKind):
             elif xs.strike:
                 if not f.strike:
                     xs.strike = 0
-                    xs.strikes.append( (xs.strike_x, cur_x_s, xs.strikeColor) )
+                    xs.strikes.append( (xs.strike_x, end_x, xs.strikeColor) )
                     xs.strikeColor = None
                 elif xs.textColor!=xs.strikeColor:
-                    xs.strikes.append( (xs.strike_x, cur_x_s, xs.strikeColor) )
+                    xs.strikes.append( (xs.strike_x, end_x, xs.strikeColor) )
                     xs.strikeColor = xs.textColor
                     xs.strike_x = cur_x_s
             if f.link and not xs.link:
@@ -320,11 +324,11 @@ def _putFragLine(cur_x, tx, line, last, pKind):
                     xs.linkColor = xs.textColor
             elif xs.link:
                 if not f.link:
-                    xs.links.append( (xs.link_x, cur_x_s, xs.link, xs.linkColor) )
+                    xs.links.append( (xs.link_x, end_x, xs.link, xs.linkColor) )
                     xs.link = None
                     xs.linkColor = None
                 elif f.link!=xs.link or xs.textColor!=xs.linkColor:
-                    xs.links.append( (xs.link_x, cur_x_s, xs.link, xs.linkColor) )
+                    xs.links.append( (xs.link_x, end_x, xs.link, xs.linkColor) )
                     xs.link = f.link
                     xs.link_x = cur_x_s
                     xs.linkColor = xs.textColor
@@ -334,10 +338,10 @@ def _putFragLine(cur_x, tx, line, last, pKind):
                 xs.backColor_x = cur_x_s
             elif xs.backColor:
                 if not bg:
-                    xs.backColors.append( (xs.backColor_x, cur_x_s, xs.backColor) )
+                    xs.backColors.append( (xs.backColor_x, end_x, xs.backColor) )
                     xs.backColor = None
                 elif f.backColor!=xs.backColor or xs.textColor!=xs.backColor:
-                    xs.backColors.append( (xs.backColor_x, cur_x_s, xs.backColor) )
+                    xs.backColors.append( (xs.backColor_x, end_x, xs.backColor) )
                     xs.backColor = bg
                     xs.backColor_x = cur_x_s
             txtlen = tx._canvas.stringWidth(text, tx._fontname, tx._fontsize)
@@ -356,7 +360,7 @@ def _putFragLine(cur_x, tx, line, last, pKind):
         xs.backColors.append( (xs.backColor_x, cur_x_s, xs.backColor) )
     if tx._x0!=x0:
         setXPos(tx,x0-tx._x0)
-    
+
 def _do_dots_frag(cur_x, cur_x_s, maxWidth, xs, tx):
     text,fontName,fontSize,textColor,backColor,dy = _getDotsInfo(xs.style)
     txtlen = tx._canvas.stringWidth(text, fontName, fontSize)
@@ -409,6 +413,10 @@ def _justifyDrawParaLineX( tx, offset, line, last=0):
     else:
         _putFragLine(offset, tx, line, last, 'justify') #no space modification
     setXPos(tx,-offset)
+
+def _trailingSpaceLength(text, tx):
+    ws = _wsc_end_search(text)
+    return tx._canvas.stringWidth(ws.group(), tx._fontname, tx._fontsize) if ws else 0
 
 def _getFragWords(frags,maxWidth=None):
     ''' given a Parafrag list return a list of fragwords
@@ -603,16 +611,39 @@ def _split_blParaHard(blPara,start,stop):
 
 def _drawBullet(canvas, offset, cur_y, bulletText, style, rtl):
     '''draw a bullet text could be a simple string or a frag list'''
-    if not rtl:
-        tx2 = canvas.beginText(style.bulletIndent, cur_y+getattr(style,"bulletOffsetY",0))
+    bulletAnchor = style.bulletAnchor
+    if rtl or style.bulletAnchor!='start':
+        numeric = bulletAnchor=='numeric'
+        if isinstance(bulletText,strTypes):
+            t =  bulletText
+            q = numeric and decimalSymbol in t
+            if q: t = t[:t.index(decimalSymbol)]
+            bulletWidth = stringWidth(t, style.bulletFontName, style.bulletFontSize)
+            if q: bulletWidth += 0.5 * stringWidth(decimalSymbol, style.bulletFontName, style.bulletFontSize)
+        else:
+            #it's a list of fragments
+            bulletWidth = 0
+            for f in bulletText:
+                t = f.text
+                q = numeric and decimalSymbol in t
+                if q:
+                    t = t[:t.index(decimalSymbol)]
+                    bulletWidth += 0.5 * stringWidth(decimalSymbol, f.fontName, f.fontSize)
+                bulletWidth += stringWidth(t, f.fontName, f.fontSize)
+                if q:
+                    break
     else:
-        bt = bulletText[0].text
-        bulletWidth = stringWidth(bt, style.bulletFontName, style.bulletFontSize)
+        bulletWidth = 0
+    if bulletAnchor=='middle': bulletWidth *= 0.5
+    cur_y += getattr(style,"bulletOffsetY",0)
+    if not rtl:
+        tx2 = canvas.beginText(style.bulletIndent-bulletWidth,cur_y)
+    else:
         width = rtl[0]
         bulletStart = width+style.rightIndent-(style.bulletIndent+bulletWidth)
-        tx2 = canvas.beginText(bulletStart, cur_y+getattr(style,"bulletOffsetY",0))
+        tx2 = canvas.beginText(bulletStart, cur_y)
     tx2.setFont(style.bulletFontName, style.bulletFontSize)
-    tx2.setFillColor(hasattr(style,'bulletColor') and style.bulletColor or style.textColor)
+    tx2.setFillColor(getattr(style,'bulletColor',style.textColor))
     if isinstance(bulletText,strTypes):
         tx2.textOut(bulletText)
     else:
@@ -639,7 +670,7 @@ def _handleBulletWidth(bulletText,style,maxWidths):
             #it's a list of fragments
             bulletWidth = 0
             for f in bulletText:
-                bulletWidth = bulletWidth + stringWidth(f.text, f.fontName, f.fontSize)
+                bulletWidth += stringWidth(f.text, f.fontName, f.fontSize)
         bulletLen = style.bulletIndent + bulletWidth + 0.6 * style.bulletFontSize
         if style.wordWrap=='RTL':
             indent = style.rightIndent+style.firstLineIndent
@@ -707,10 +738,23 @@ def splitLines0(frags,widths):
             if j==lim:
                 i += 1
 
+def _old_do_line(tx, x1, y1, x2, y2):
+    tx._canvas.line(x1, y1, x2, y2)
+
+def _do_line(tx, x1, y1, x2, y2):
+    olw = tx._canvas._lineWidth
+    nlw = tx._underlineProportion*tx._fontsize
+    if nlw!=olw:
+        tx._canvas.setLineWidth(nlw)
+        tx._canvas.line(x1, y1, x2, y2)
+        tx._canvas.setLineWidth(olw)
+    else:
+        tx._canvas.line(x1, y1, x2, y2)
+
 def _do_under_line(i, t_off, ws, tx, lm=-0.125):
     y = tx.XtraState.cur_y - i*tx.XtraState.style.leading + lm*tx.XtraState.f.fontSize
     textlen = tx._canvas.stringWidth(' '.join(tx.XtraState.lines[i][1]), tx._fontname, tx._fontsize)
-    tx._canvas.line(t_off, y, t_off+textlen+ws, y)
+    tx._do_line(t_off, y, t_off+textlen, y)
 
 _scheme_re = re.compile('^[a-zA-Z][-+a-zA-Z0-9]+$')
 def _doLink(tx,link,rect):
@@ -732,7 +776,7 @@ def _do_link_line(i, t_off, ws, tx):
     y = xs.cur_y - i*leading - xs.f.fontSize/8.0 # 8.0 factor copied from para.py
     text = ' '.join(xs.lines[i][1])
     textlen = tx._canvas.stringWidth(text, tx._fontname, tx._fontsize)
-    _doLink(tx, xs.link, (t_off, y, t_off+textlen+ws, y+leading))
+    _doLink(tx, xs.link, (t_off, y, t_off+textlen, y+leading))
 
 def _do_post_text(tx):
     xs = tx.XtraState
@@ -751,7 +795,7 @@ def _do_post_text(tx):
         if c!=csc:
             tx._canvas.setStrokeColor(c)
             csc = c
-        tx._canvas.line(x1, y, x2, y)
+        tx._do_line(x1, y, x2, y)
     xs.underlines = []
     xs.underline=0
     xs.underlineColor=None
@@ -761,7 +805,7 @@ def _do_post_text(tx):
         if c!=csc:
             tx._canvas.setStrokeColor(c)
             csc = c
-        tx._canvas.line(x1, ys, x2, ys)
+        tx._do_line(x1, ys, x2, ys)
     xs.strikes = []
     xs.strike=0
     xs.strikeColor=None
@@ -772,7 +816,7 @@ def _do_post_text(tx):
             if c!=csc:
                 tx._canvas.setStrokeColor(c)
                 csc = c
-            tx._canvas.line(x1, y, x2, y)
+            tx._do_line(x1, y, x2, y)
         _doLink(tx, link, (x1, y, x2, yl))
     xs.links = []
     xs.link=None
@@ -871,7 +915,6 @@ def makeCJKParaLine(U,maxWidth,widthUsed,extraSpace,lineBreak,calcBounds):
 
 def cjkFragSplit(frags, maxWidths, calcBounds, encoding='utf8'):
     '''This attempts to be wordSplit for frags using the dumb algorithm'''
-    from reportlab.rl_config import _FUZZ
     U = []  #get a list of single glyphs with their widths etc etc
     for f in frags:
         text = f.text
@@ -1024,7 +1067,7 @@ class Paragraph(Flowable):
         return '\n'.join(L)
 
     def _setup(self, text, style, bulletText, frags, cleaner):
-        
+
         #This used to be a global parser to save overhead.
         #In the interests of thread safety it is being instantiated per paragraph.
         #On the next release, we'll replace with a cElementTree parser
@@ -1578,7 +1621,7 @@ class Paragraph(Flowable):
                 elif self.style.alignment == TA_JUSTIFY:
                     dpl = _justifyDrawParaLine
                 f = blPara
-                if rl_config.paraFontSizeHeightOffset:
+                if paraFontSizeHeightOffset:
                     cur_y = self.height - f.fontSize
                 else:
                     cur_y = self.height - getattr(f,'ascent',f.fontSize)
@@ -1589,6 +1632,12 @@ class Paragraph(Flowable):
                 canvas.setFillColor(f.textColor)
 
                 tx = self.beginText(cur_x, cur_y)
+                if style.underlineProportion:
+                    tx._underlineProportion = style.underlineProportion
+                    tx._do_line = _do_line
+                else:
+                    tx._do_line = _old_do_line
+                tx._do_line = MethodType(tx._do_line,tx)
                 if autoLeading=='max':
                     leading = max(leading,blPara.ascent-blPara.descent)
                 elif autoLeading=='min':
@@ -1644,7 +1693,7 @@ class Paragraph(Flowable):
                     for line in lines:
                         line.words = line.words[::-1]
                 f = lines[0]
-                if rl_config.paraFontSizeHeightOffset:
+                if paraFontSizeHeightOffset:
                     cur_y = self.height - f.fontSize
                 else:
                     cur_y = self.height - getattr(f,'ascent',f.fontSize)
@@ -1666,6 +1715,12 @@ class Paragraph(Flowable):
 
                 #set up the font etc.
                 tx = self.beginText(cur_x, cur_y)
+                if style.underlineProportion:
+                    tx._underlineProportion = style.underlineProportion
+                    tx._do_line = _do_line
+                else:
+                    tx._do_line = _old_do_line
+                tx._do_line = MethodType(tx._do_line,tx)
                 # set the paragraph direction
                 tx.direction = self.style.wordWrap
 
